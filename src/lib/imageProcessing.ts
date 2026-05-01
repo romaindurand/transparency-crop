@@ -19,9 +19,12 @@ function rgbaDistance(
 	a: number,
 	[targetR, targetG, targetB, targetA]: RGBA
 ): number {
-	const dr = r - targetR;
-	const dg = g - targetG;
-	const db = b - targetB;
+	const alpha = a / 255;
+	const targetAlpha = targetA / 255;
+
+	const dr = r * alpha - targetR * targetAlpha;
+	const dg = g * alpha - targetG * targetAlpha;
+	const db = b * alpha - targetB * targetAlpha;
 	const da = a - targetA;
 
 	return Math.sqrt(dr * dr + dg * dg + db * db + da * da);
@@ -34,9 +37,12 @@ function rgbaDistanceSquared(
 	a: number,
 	[targetR, targetG, targetB, targetA]: RGBA
 ): number {
-	const dr = r - targetR;
-	const dg = g - targetG;
-	const db = b - targetB;
+	const alpha = a / 255;
+	const targetAlpha = targetA / 255;
+
+	const dr = r * alpha - targetR * targetAlpha;
+	const dg = g * alpha - targetG * targetAlpha;
+	const db = b * alpha - targetB * targetAlpha;
 	const da = a - targetA;
 
 	return dr * dr + dg * dg + db * db + da * da;

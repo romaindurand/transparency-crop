@@ -45,10 +45,22 @@ describe('detectMatchingMask', () => {
 		const data = new Uint8ClampedArray([255, 255, 255, 0, 255, 255, 255, 30]);
 
 		const maskAtZero = detectMatchingMask(data, 2, 1, [255, 255, 255, 0], 0);
-		const maskAtSix = detectMatchingMask(data, 2, 1, [255, 255, 255, 0], 6);
+		const maskAtTwelve = detectMatchingMask(data, 2, 1, [255, 255, 255, 0], 12);
 
 		expect(Array.from(maskAtZero)).toEqual([1, 0]);
-		expect(Array.from(maskAtSix)).toEqual([1, 1]);
+		expect(Array.from(maskAtTwelve)).toEqual([1, 1]);
+	});
+
+	it('treats almost transparent pixels as very close even with opposite RGB', () => {
+		const data = new Uint8ClampedArray([
+			255, 255, 255, 1, 0, 0, 0, 1, 0, 0, 0, 0, 255, 255, 255, 255
+		]);
+
+		const maskAtZero = detectMatchingMask(data, 4, 1, [255, 255, 255, 1], 0);
+		const maskAtOne = detectMatchingMask(data, 4, 1, [255, 255, 255, 1], 1);
+
+		expect(Array.from(maskAtZero)).toEqual([1, 0, 0, 0]);
+		expect(Array.from(maskAtOne)).toEqual([1, 1, 1, 0]);
 	});
 });
 
