@@ -12,10 +12,14 @@
 	let fileInputElement = $state<HTMLInputElement | null>(null);
 
 	let isDragOver = $state(false);
-	let isPipetteEnabled = $state(true);
 	let isLoading = $state(false);
 	let isCroppingAll = $state(false);
 	let errorMessage = $state<string | null>(null);
+	let isPanning = $state(false);
+	let panStartX = $state(0);
+	let panStartY = $state(0);
+	let panStartOffsetX = $state(0);
+	let panStartOffsetY = $state(0);
 
 	let files = $state<LoadedFile[]>([]);
 	let activeFileId = $state<string | null>(null);
@@ -293,7 +297,7 @@
 	}
 
 	function handleCanvasClick(event: MouseEvent): void {
-		if (!isPipetteEnabled || !activeFile) {
+		if (!activeFile) {
 			return;
 		}
 
@@ -335,6 +339,42 @@
 		];
 		errorMessage = null;
 		scheduleCropComputation(0);
+	}
+
+	function handleMouseDown(event: MouseEvent): void {
+		// Bouton milieu (wheel) pour le pan
+		if (event.button !== 1 || !activeFile) {
+			return;
+		}
+
+		event.preventDefault();
+		isPanning = true;
+		hasManualTransform = true;
+		panStartX = event.clientX;
+		panStartY = event.clientY;
+		panStartOffsetX = transform.offsetX;
+		panStartOffsetY = transform.offsetY;
+	}
+
+	function handleMouseMove(event: MouseEvent): void {
+		if (!isPanning) {
+			return;
+		}
+
+		const deltaX = event.clientX - panStartX;
+		const deltaY = event.clientY - panStartY;
+
+		transform = {
+			scale: transform.scale,
+			offsetX: panStartOffsetX + deltaX,
+			offsetY: panStartOffsetY + deltaY
+		};
+
+		scheduleRender();
+	}
+
+	function handleMouseUp(): void {
+		isPanning = false;
 	}
 
 	function handleWheel(event: WheelEvent): void {
@@ -655,6 +695,10 @@
 					tabindex="0"
 					onclick={handleCanvasClick}
 					onwheel={handleWheel}
+					onmousedown={handleMouseDown}
+					onmousemove={handleMouseMove}
+					onmouseup={handleMouseUp}
+					onmouseleave={handleMouseUp}
 				></canvas>
 
 				{#if !activeFile}
@@ -680,18 +724,6 @@
 	{/if}
 
 	<section class="toolbar">
-		<button
-			type="button"
-			class:is-active={isPipetteEnabled}
-			class="tool-button"
-			onclick={() => {
-				isPipetteEnabled = !isPipetteEnabled;
-			}}
-			disabled={!activeFile}
-		>
-			Pipette
-		</button>
-
 		<div class="tolerance-group">
 			<label for="tolerance">Tolérance: {tolerance}%</label>
 			<input id="tolerance" type="range" min="0" max="100" step="1" bind:value={tolerance} />
@@ -891,7 +923,7 @@
 
 	.toolbar {
 		display: grid;
-		grid-template-columns: auto 1fr auto auto;
+		grid-template-columns: 1fr auto auto auto;
 		gap: 0.75rem;
 		align-items: center;
 		padding: 0.75rem;
@@ -922,7 +954,6 @@
 		color: white;
 	}
 
-	.tool-button,
 	.crop-button {
 		border: 0;
 		border-radius: 0.8rem;
@@ -935,14 +966,8 @@
 		transition: transform 150ms ease;
 	}
 
-	.tool-button:hover,
 	.crop-button:hover {
 		transform: translateY(-1px);
-	}
-
-	.tool-button.is-active {
-		background: #14b8a6;
-		color: white;
 	}
 
 	.crop-button {
