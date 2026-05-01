@@ -298,16 +298,21 @@
 		}
 
 		const point = getImageCoordinates(event.clientX, event.clientY);
-		if (!point) {
-			return;
-		}
 
-		const { x, y } = point;
-
-		// Clic hors de la cropBox courante → reset de la couleur sélectionnée
+		// Clic hors de la cropBox courante (y compris en dehors de l'image) → reset de la couleur sélectionnée
 		if (selectedColor !== null && effectiveCropBox !== null) {
+			if (!point) {
+				// Clic complètement en dehors de l'image
+				selectedColor = null;
+				updateActiveFileCropBox(null);
+				scheduleRender();
+				return;
+			}
+
+			const { x, y } = point;
 			const box = effectiveCropBox;
 			if (x < box.x || x >= box.x + box.width || y < box.y || y >= box.y + box.height) {
+				// Clic en dehors du cropBox
 				selectedColor = null;
 				updateActiveFileCropBox(null);
 				scheduleRender();
@@ -315,6 +320,12 @@
 			}
 		}
 
+		// Si pas de point, c'est qu'on a cliqué en dehors de l'image et pas de couleur n'était sélectionnée
+		if (!point) {
+			return;
+		}
+
+		const { x, y } = point;
 		const pixelIndex = (y * activeFile.metadata.width + x) * 4;
 		selectedColor = [
 			activeFile.sourcePixels[pixelIndex],
