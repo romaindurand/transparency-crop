@@ -6,6 +6,9 @@
 	import type { CropWorkerClient } from '$lib/workers/cropWorkerClient';
 	import type { CropBox, ImageMetadata, LoadedFile, RGBA, ViewportTransform } from '$lib/types';
 	import { zipSync } from 'fflate';
+	import FileSidebar from '../components/FileSidebar.svelte';
+	import ImageViewport from '../components/ImageViewport.svelte';
+	import Toolbar from '../components/Toolbar.svelte';
 
 	let viewportElement = $state<HTMLDivElement | null>(null);
 	let canvasElement = $state<HTMLCanvasElement | null>(null);
@@ -47,12 +50,13 @@
 	let debounceTimer: number | null = null;
 	let workerRequestId = 0;
 	let renderFrameId: number | null = null;
-
-	const selectedColorCss = $derived(
-		selectedColor
-			? `rgba(${selectedColor[0]}, ${selectedColor[1]}, ${selectedColor[2]}, ${selectedColor[3] / 255})`
-			: 'transparent'
-	);
+	const bodyClasses = [
+		'm-0',
+		'bg-[radial-gradient(1100px_500px_at_-10%_-10%,#c1f7d6_0%,transparent_70%),radial-gradient(1000px_520px_at_110%_110%,#ffd8a8_0%,transparent_70%),linear-gradient(160deg,#f7f9fc_0%,#eef2f7_100%)]',
+		"font-['Space_Grotesk','Segoe_UI',sans-serif]",
+		'text-gray-800',
+		'antialiased'
+	];
 
 	const canCrop = $derived(activeFile !== null);
 
@@ -473,16 +477,7 @@
 		}
 	}
 
-	async function handleInputChange(event: Event): Promise<void> {
-		const input = event.currentTarget as HTMLInputElement;
-		const fileList = Array.from(input.files ?? []);
-		if (!fileList.length) {
-			return;
-		}
-
-		isLoading = true;
-		errorMessage = null;
-
+	async function appendLoadedFiles(fileList: File[]): Promise<void> {
 		for (const file of fileList) {
 			const loaded = await loadImageFile(file);
 			if (loaded) {
@@ -493,6 +488,18 @@
 		if (!activeFileId && files.length > 0) {
 			await switchToFile(files[0].id);
 		}
+	}
+
+	async function handleInputChange(event: Event): Promise<void> {
+		const input = event.currentTarget as HTMLInputElement;
+		const fileList = Array.from(input.files ?? []);
+		if (!fileList.length) {
+			return;
+		}
+
+		isLoading = true;
+		errorMessage = null;
+		await appendLoadedFiles(fileList);
 
 		isLoading = false;
 		input.value = '';
@@ -509,17 +516,7 @@
 
 		isLoading = true;
 		errorMessage = null;
-
-		for (const file of fileList) {
-			const loaded = await loadImageFile(file);
-			if (loaded) {
-				files = [...files, loaded];
-			}
-		}
-
-		if (!activeFileId && files.length > 0) {
-			await switchToFile(files[0].id);
-		}
+		await appendLoadedFiles(fileList);
 
 		isLoading = false;
 	}
@@ -606,10 +603,26 @@
 		fileInputElement?.click();
 	}
 
+	function handleStageDragOver(): void {
+		isDragOver = true;
+	}
+
+	function handleStageDragLeave(event: DragEvent): void {
+		if (event.currentTarget === event.target) {
+			isDragOver = false;
+		}
+	}
+
+	function handleToleranceChange(value: number): void {
+		tolerance = value;
+	}
+
 	onMount(() => {
 		ensureCropWorkerClient();
+		document.body.classList.add(...bodyClasses);
 
 		return () => {
+			document.body.classList.remove(...bodyClasses);
 			cancelOngoingComputation();
 			if (renderFrameId !== null) {
 				window.cancelAnimationFrame(renderFrameId);
@@ -656,109 +669,42 @@
 	});
 </script>
 
-<main class="page-shell">
-	<div class="main-area">
-		{#if files.length > 0}
-			<aside class="sidebar">
-				{#each files as file (file.id)}
-					<button
-						class="file-item"
-						class:active={file.id === activeFileId}
-						onclick={() => switchToFile(file.id)}
-					>
-						<img src={file.thumbnailUrl} alt={file.metadata.name} class="thumb" />
-						<span class="filename">{file.metadata.name}</span>
-					</button>
-				{/each}
-			</aside>
-		{/if}
+<main class="grid min-h-svh grid-rows-[1fr_auto_auto] gap-4 p-4">
+	<div class="flex min-h-0 gap-4">
+		<FileSidebar {files} {activeFileId} onSelectFile={switchToFile} />
 
-		<section
-			class="stage"
-			aria-label="Zone de dépôt d'image"
-			ondragover={(event) => {
-				event.preventDefault();
-				isDragOver = true;
-			}}
-			ondragleave={(event) => {
-				if (event.currentTarget === event.target) {
-					isDragOver = false;
-				}
-			}}
-			ondrop={handleDrop}
-		>
-			<div class="glow"></div>
-			<div class="viewport-wrap" bind:this={viewportElement}>
-				<canvas
-					bind:this={canvasElement}
-					class="viewport-canvas"
-					tabindex="0"
-					onclick={handleCanvasClick}
-					onwheel={handleWheel}
-					onmousedown={handleMouseDown}
-					onmousemove={handleMouseMove}
-					onmouseup={handleMouseUp}
-					onmouseleave={handleMouseUp}
-				></canvas>
-
-				{#if !activeFile}
-					<button class="drop-overlay" type="button" onclick={openFileDialog}>
-						<p class="drop-title">Drop an image here</p>
-						<p class="drop-subtitle">ou cliquez pour choisir un fichier</p>
-					</button>
-				{/if}
-
-				{#if isDragOver}
-					<div class="drop-highlight">Relâchez l'image pour la charger</div>
-				{/if}
-
-				{#if isLoading}
-					<div class="drop-highlight">Chargement de l'image...</div>
-				{/if}
-			</div>
-		</section>
+		<ImageViewport
+			{activeFile}
+			{isDragOver}
+			{isLoading}
+			onCanvasClick={handleCanvasClick}
+			onCanvasWheel={handleWheel}
+			onMouseDown={handleMouseDown}
+			onMouseMove={handleMouseMove}
+			onMouseUp={handleMouseUp}
+			onDragOver={handleStageDragOver}
+			onDragLeave={handleStageDragLeave}
+			onDrop={handleDrop}
+			onOpenFileDialog={openFileDialog}
+			bind:canvasRef={canvasElement}
+			bind:viewportRef={viewportElement}
+		/>
 	</div>
 
 	{#if errorMessage}
-		<p class="error-banner">{errorMessage}</p>
+		<p class="m-0 rounded-xl bg-red-100 px-3.5 py-2.5 font-semibold text-red-800">{errorMessage}</p>
 	{/if}
 
-	<section class="toolbar">
-		<div class="tolerance-group">
-			<label for="tolerance">Tolérance: {tolerance}%</label>
-			<input id="tolerance" type="range" min="0" max="100" step="1" bind:value={tolerance} />
-		</div>
-
-		<div class="color-info">
-			<span>Couleur</span>
-			{#if selectedColor !== null}
-				<div class="color-preview">
-					<div class="swatch" style={`background:${selectedColorCss};`}></div>
-					<small>
-						rgba({selectedColor[0]}, {selectedColor[1]}, {selectedColor[2]}, {selectedColor[3]})
-					</small>
-				</div>
-			{:else}
-				<span class="no-color">Aucune</span>
-			{/if}
-		</div>
-
-		<div class="crop-buttons">
-			<button type="button" class="crop-button" onclick={downloadCrop} disabled={!canCrop}>
-				Crop
-			</button>
-			{#if files.length > 1}
-				<button
-					type="button"
-					class="crop-button crop-all-button"
-					onclick={cropAllToZip}
-					disabled={isCroppingAll}
-				>
-					{isCroppingAll ? 'Traitement…' : 'Crop all'}
-				</button>
-			{/if}
-		</div>
-	</section>
+	<Toolbar
+		{tolerance}
+		{selectedColor}
+		{canCrop}
+		{isCroppingAll}
+		filesCount={files.length}
+		onToleranceChange={handleToleranceChange}
+		onDownloadCrop={downloadCrop}
+		onCropAllToZip={cropAllToZip}
+	/>
 
 	<input
 		type="file"
@@ -769,273 +715,3 @@
 		onchange={handleInputChange}
 	/>
 </main>
-
-<style>
-	:global(body) {
-		margin: 0;
-		font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
-		background:
-			radial-gradient(1100px 500px at -10% -10%, #c1f7d6 0%, transparent 70%),
-			radial-gradient(1000px 520px at 110% 110%, #ffd8a8 0%, transparent 70%),
-			linear-gradient(160deg, #f7f9fc 0%, #eef2f7 100%);
-		color: #1f2937;
-	}
-
-	.page-shell {
-		display: grid;
-		grid-template-rows: 1fr auto auto;
-		gap: 1rem;
-		min-height: 100svh;
-		padding: 1rem;
-	}
-
-	.main-area {
-		display: flex;
-		gap: 1rem;
-		overflow: hidden;
-		min-height: 0;
-	}
-
-	.stage {
-		position: relative;
-		flex: 1;
-		min-width: 0;
-		border-radius: 1.25rem;
-		background: color-mix(in srgb, #ffffff 76%, #fefce8 24%);
-		box-shadow:
-			0 18px 40px -30px #1f2937,
-			0 0 0 1px color-mix(in srgb, #0f172a 8%, transparent);
-		overflow: hidden;
-	}
-
-	.sidebar {
-		width: 160px;
-		min-width: 160px;
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-		overflow-y: auto;
-		background: color-mix(in srgb, #ffffff 88%, transparent);
-		border-radius: 1.25rem;
-		padding: 0.5rem;
-		box-shadow: 0 8px 20px -18px #111827;
-	}
-
-	.file-item {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 0.3rem;
-		padding: 0.5rem;
-		border: 0;
-		border-radius: 0.75rem;
-		background: transparent;
-		cursor: pointer;
-		font-family: 'Space Grotesk', sans-serif;
-		transition: background 150ms ease;
-		width: 100%;
-	}
-
-	.file-item:hover {
-		background: color-mix(in srgb, #14b8a6 15%, transparent);
-	}
-
-	.file-item.active {
-		background: color-mix(in srgb, #14b8a6 25%, transparent);
-		box-shadow: inset 3px 0 0 #14b8a6;
-	}
-
-	.thumb {
-		width: 100%;
-		height: auto;
-		border-radius: 0.5rem;
-		object-fit: contain;
-		display: block;
-	}
-
-	.filename {
-		font-size: 0.75rem;
-		color: #374151;
-		text-overflow: ellipsis;
-		overflow: hidden;
-		white-space: nowrap;
-		width: 100%;
-		text-align: center;
-	}
-
-	.glow {
-		position: absolute;
-		inset: -40% -20% auto -20%;
-		height: 220px;
-		background: linear-gradient(90deg, #5eead4 0%, #facc15 100%);
-		opacity: 0.1;
-		filter: blur(36px);
-		pointer-events: none;
-	}
-
-	.viewport-wrap {
-		position: relative;
-		height: min(72vh, 900px);
-		min-height: 300px;
-	}
-
-	.viewport-canvas {
-		width: 100%;
-		height: 100%;
-		display: block;
-		cursor: crosshair;
-	}
-
-	.drop-overlay {
-		position: absolute;
-		inset: 0;
-		display: grid;
-		place-content: center;
-		gap: 0.4rem;
-		background: color-mix(in srgb, #ffffff 78%, transparent);
-		border: 0;
-		cursor: pointer;
-		font-family: 'Space Grotesk', sans-serif;
-	}
-
-	.drop-title {
-		margin: 0;
-		font-size: clamp(1.25rem, 3vw, 2rem);
-		font-weight: 700;
-	}
-
-	.drop-subtitle {
-		margin: 0;
-		font-size: 0.95rem;
-		color: #4b5563;
-	}
-
-	.drop-highlight {
-		position: absolute;
-		inset: 0;
-		display: grid;
-		place-content: center;
-		background: color-mix(in srgb, #111827 35%, transparent);
-		color: #f9fafb;
-		font-size: 1.1rem;
-		font-weight: 600;
-	}
-
-	.toolbar {
-		display: grid;
-		grid-template-columns: 1fr auto auto auto;
-		gap: 0.75rem;
-		align-items: center;
-		padding: 0.75rem;
-		border-radius: 1rem;
-		background: color-mix(in srgb, #ffffff 88%, transparent);
-		box-shadow: 0 8px 20px -18px #111827;
-	}
-
-	.color-info {
-		display: grid;
-		gap: 0.2rem;
-		font-size: 0.86rem;
-	}
-
-	.no-color {
-		color: #9ca3af;
-		font-size: 0.86rem;
-	}
-
-	.crop-buttons {
-		display: flex;
-		gap: 0.5rem;
-		align-items: center;
-	}
-
-	.crop-all-button {
-		background: #6366f1;
-		color: white;
-	}
-
-	.crop-button {
-		border: 0;
-		border-radius: 0.8rem;
-		padding: 0.7rem 1rem;
-		font-weight: 600;
-		font-family: 'Space Grotesk', sans-serif;
-		background: #e5e7eb;
-		color: #111827;
-		cursor: pointer;
-		transition: transform 150ms ease;
-	}
-
-	.crop-button:hover {
-		transform: translateY(-1px);
-	}
-
-	.crop-button {
-		background: #f59e0b;
-	}
-
-	.tolerance-group {
-		display: grid;
-		gap: 0.2rem;
-	}
-
-	.tolerance-group label {
-		font-size: 0.92rem;
-		color: #374151;
-	}
-
-	.tolerance-group input {
-		width: 100%;
-	}
-
-	.color-preview {
-		display: grid;
-		grid-auto-flow: column;
-		gap: 0.5rem;
-		align-items: center;
-	}
-
-	.swatch {
-		width: 1.8rem;
-		height: 1.8rem;
-		border-radius: 0.45rem;
-		border: 1px solid color-mix(in srgb, #111827 20%, transparent);
-		background-image:
-			linear-gradient(45deg, #e5e7eb 25%, transparent 25%),
-			linear-gradient(-45deg, #e5e7eb 25%, transparent 25%),
-			linear-gradient(45deg, transparent 75%, #e5e7eb 75%),
-			linear-gradient(-45deg, transparent 75%, #e5e7eb 75%);
-		background-size: 10px 10px;
-		background-position:
-			0 0,
-			0 5px,
-			5px -5px,
-			-5px 0;
-	}
-
-	.error-banner {
-		margin: 0;
-		padding: 0.65rem 0.85rem;
-		border-radius: 0.75rem;
-		background: #fee2e2;
-		color: #991b1b;
-		font-weight: 600;
-	}
-
-	button:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-		transform: none;
-	}
-
-	@media (max-width: 900px) {
-		.toolbar {
-			grid-template-columns: 1fr;
-		}
-
-		.color-info {
-			grid-auto-flow: row;
-			justify-items: start;
-		}
-	}
-</style>
