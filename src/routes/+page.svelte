@@ -669,8 +669,8 @@
 	});
 </script>
 
-<main class="grid min-h-svh grid-rows-[1fr_auto_auto] gap-4 p-4">
-	<div class="flex min-h-0 gap-4">
+<main class="relative h-svh p-4 [--toolbar-height:6.5rem]">
+	<div class="flex h-[calc(100svh-var(--toolbar-height)-3rem)] min-h-0 gap-4">
 		<FileSidebar {files} {activeFileId} onSelectFile={switchToFile} />
 
 		<ImageViewport
@@ -692,19 +692,25 @@
 	</div>
 
 	{#if errorMessage}
-		<p class="m-0 rounded-xl bg-red-100 px-3.5 py-2.5 font-semibold text-red-800">{errorMessage}</p>
+		<p
+			class="absolute right-4 left-4 bottom-[calc(var(--toolbar-height)+1.25rem)] m-0 rounded-xl bg-red-100 px-3.5 py-2.5 font-semibold text-red-800"
+		>
+			{errorMessage}
+		</p>
 	{/if}
 
-	<Toolbar
-		{tolerance}
-		{selectedColor}
-		{canCrop}
-		{isCroppingAll}
-		filesCount={files.length}
-		onToleranceChange={handleToleranceChange}
-		onDownloadCrop={downloadCrop}
-		onCropAllToZip={cropAllToZip}
-	/>
+	<div class="absolute right-4 bottom-4 left-4 h-(--toolbar-height)">
+		<Toolbar
+			{tolerance}
+			{selectedColor}
+			{canCrop}
+			{isCroppingAll}
+			filesCount={files.length}
+			onToleranceChange={handleToleranceChange}
+			onDownloadCrop={downloadCrop}
+			onCropAllToZip={cropAllToZip}
+		/>
+	</div>
 
 	<input
 		type="file"

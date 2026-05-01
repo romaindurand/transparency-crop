@@ -12,7 +12,7 @@
 
 {#if files.length > 0}
 	<aside
-		class="flex w-40 shrink-0 flex-col gap-2 overflow-y-auto rounded-xl bg-white/88 p-2 shadow-lg"
+		class="flex h-full w-40 shrink-0 flex-col gap-2 overflow-y-auto rounded-xl bg-white/88 p-2 shadow-lg"
 	>
 		{#each files as file (file.id)}
 			<button

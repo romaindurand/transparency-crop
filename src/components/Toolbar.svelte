@@ -32,7 +32,7 @@
 	);
 </script>
 
-<section class="grid grid-cols-[1fr_auto_auto] gap-3 rounded-lg bg-white/88 p-3 shadow-lg">
+<section class="grid h-full grid-cols-[1fr_auto_auto] gap-3 rounded-lg bg-white/88 p-3 shadow-lg">
 	<SliderInput
 		id="tolerance"
 		label={`Tolérance: ${tolerance}%`}
