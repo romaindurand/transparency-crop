@@ -25,6 +25,15 @@ export type ViewportTransform = {
 	offsetY: number;
 };
 
+export type LoadedFile = {
+	id: string;
+	metadata: ImageMetadata;
+	sourceCanvas: HTMLCanvasElement;
+	sourcePixels: Uint8ClampedArray;
+	cropBox: CropBox | null;
+	thumbnailUrl: string;
+};
+
 export type CropWorkerApi = {
 	setImageData(pixels: Uint8ClampedArray, width: number, height: number): void;
 	cancelCurrentComputation(): void;

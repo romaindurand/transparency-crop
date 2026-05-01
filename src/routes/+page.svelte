@@ -4,7 +4,8 @@
 	import { onMount } from 'svelte';
 	import { createCropWorkerClient } from '$lib/workers/cropWorkerClient';
 	import type { CropWorkerClient } from '$lib/workers/cropWorkerClient';
-	import type { CropBox, ImageMetadata, RGBA, ViewportTransform } from '$lib/types';
+	import type { CropBox, ImageMetadata, LoadedFile, RGBA, ViewportTransform } from '$lib/types';
+	import { zipSync } from 'fflate';
 
 	let viewportElement = $state<HTMLDivElement | null>(null);
 	let canvasElement = $state<HTMLCanvasElement | null>(null);
@@ -13,16 +14,24 @@
 	let isDragOver = $state(false);
 	let isPipetteEnabled = $state(true);
 	let isLoading = $state(false);
+	let isCroppingAll = $state(false);
 	let errorMessage = $state<string | null>(null);
 
-	let imageMetadata = $state<ImageMetadata | null>(null);
+	let files = $state<LoadedFile[]>([]);
+	let activeFileId = $state<string | null>(null);
 	let selectedColor = $state<RGBA | null>(null);
 	let tolerance = $state(6);
-	let cropBox = $state<CropBox | null>(null);
-
-	let sourceCanvas = $state<HTMLCanvasElement | null>(null);
-	let sourcePixels = $state<Uint8ClampedArray | null>(null);
 	let cropWorkerClient: CropWorkerClient | null = null;
+
+	const activeFile = $derived(files.find((f) => f.id === activeFileId) ?? null);
+
+	const effectiveCropBox = $derived(
+		activeFile
+			? selectedColor !== null && activeFile.cropBox !== null
+				? activeFile.cropBox
+				: { x: 0, y: 0, width: activeFile.metadata.width, height: activeFile.metadata.height }
+			: null
+	);
 
 	let transform = $state<ViewportTransform>({
 		scale: 1,
@@ -41,7 +50,7 @@
 			: 'transparent'
 	);
 
-	const canCrop = $derived(Boolean(sourceCanvas && cropBox && selectedColor));
+	const canCrop = $derived(activeFile !== null);
 
 	function getExtensionFromMimeType(mimeType: string): string {
 		if (mimeType === 'image/jpeg') return 'jpg';
@@ -71,7 +80,7 @@
 	}
 
 	function fitImageToViewport(): void {
-		if (!viewportElement || !imageMetadata) {
+		if (!viewportElement || !activeFile) {
 			return;
 		}
 
@@ -80,12 +89,12 @@
 			return;
 		}
 
-		const scale =
-			Math.min(rect.width / imageMetadata.width, rect.height / imageMetadata.height) * 0.9;
+		const { width, height } = activeFile.metadata;
+		const scale = Math.min(rect.width / width, rect.height / height) * 0.9;
 		transform = {
 			scale,
-			offsetX: (rect.width - imageMetadata.width * scale) / 2,
-			offsetY: (rect.height - imageMetadata.height * scale) / 2
+			offsetX: (rect.width - width * scale) / 2,
+			offsetY: (rect.height - height * scale) / 2
 		};
 	}
 
@@ -110,9 +119,13 @@
 		cropWorkerClient?.cancelCurrentComputation();
 	}
 
+	function updateActiveFileCropBox(box: CropBox | null): void {
+		if (!activeFileId) return;
+		files = files.map((f) => (f.id === activeFileId ? { ...f, cropBox: box } : f));
+	}
+
 	async function runCropComputation(jobId: number): Promise<void> {
-		if (!sourcePixels || !selectedColor || !imageMetadata) {
-			cropBox = null;
+		if (!activeFile || !selectedColor) {
 			scheduleRender();
 			return;
 		}
@@ -132,16 +145,11 @@
 
 		try {
 			const nextCropBox = await workerClient.computeCropBox(targetColor, tolerance);
-			console.log({ nextCropBox, jobId, workerRequestId });
 			if (jobId !== workerRequestId) {
-				console.warn('Received crop box for an outdated job. Ignoring the result.', {
-					jobId,
-					currentJobId: workerRequestId
-				});
 				return;
 			}
 
-			cropBox = nextCropBox;
+			updateActiveFileCropBox(nextCropBox);
 			scheduleRender();
 		} catch (error) {
 			if (
@@ -160,9 +168,11 @@
 	}
 
 	function scheduleCropComputation(delayMs: number): void {
-		if (!selectedColor || !sourcePixels || !imageMetadata) {
+		// Ignore scheduling during batch crop to prevent interruptions
+		if (isCroppingAll) return;
+
+		if (!selectedColor || !activeFile) {
 			cancelOngoingComputation();
-			cropBox = null;
 			scheduleRender();
 			return;
 		}
@@ -223,21 +233,21 @@
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		drawCheckerboard(ctx, rect.width, rect.height);
 
-		if (!sourceCanvas || !imageMetadata) {
+		if (!activeFile) {
 			return;
 		}
 
 		ctx.save();
 		ctx.translate(transform.offsetX, transform.offsetY);
 		ctx.scale(transform.scale, transform.scale);
-		ctx.drawImage(sourceCanvas, 0, 0);
+		ctx.drawImage(activeFile.sourceCanvas, 0, 0);
 		ctx.restore();
 
-		if (selectedColor && cropBox) {
-			const holeX = transform.offsetX + cropBox.x * transform.scale;
-			const holeY = transform.offsetY + cropBox.y * transform.scale;
-			const holeWidth = cropBox.width * transform.scale;
-			const holeHeight = cropBox.height * transform.scale;
+		if (effectiveCropBox) {
+			const holeX = transform.offsetX + effectiveCropBox.x * transform.scale;
+			const holeY = transform.offsetY + effectiveCropBox.y * transform.scale;
+			const holeWidth = effectiveCropBox.width * transform.scale;
+			const holeHeight = effectiveCropBox.height * transform.scale;
 
 			ctx.save();
 			ctx.fillStyle = 'rgba(0, 0, 0, 0.58)';
@@ -259,7 +269,7 @@
 	}
 
 	function getImageCoordinates(clientX: number, clientY: number): { x: number; y: number } | null {
-		if (!canvasElement || !imageMetadata) {
+		if (!canvasElement || !activeFile) {
 			return null;
 		}
 
@@ -273,8 +283,8 @@
 		if (
 			imageX < 0 ||
 			imageY < 0 ||
-			imageX >= imageMetadata.width ||
-			imageY >= imageMetadata.height
+			imageX >= activeFile.metadata.width ||
+			imageY >= activeFile.metadata.height
 		) {
 			return null;
 		}
@@ -283,7 +293,7 @@
 	}
 
 	function handleCanvasClick(event: MouseEvent): void {
-		if (!isPipetteEnabled || !sourcePixels || !imageMetadata) {
+		if (!isPipetteEnabled || !activeFile) {
 			return;
 		}
 
@@ -292,19 +302,32 @@
 			return;
 		}
 
-		const pixelIndex = (point.y * imageMetadata.width + point.x) * 4;
+		const { x, y } = point;
+
+		// Clic hors de la cropBox courante → reset de la couleur sélectionnée
+		if (selectedColor !== null && effectiveCropBox !== null) {
+			const box = effectiveCropBox;
+			if (x < box.x || x >= box.x + box.width || y < box.y || y >= box.y + box.height) {
+				selectedColor = null;
+				updateActiveFileCropBox(null);
+				scheduleRender();
+				return;
+			}
+		}
+
+		const pixelIndex = (y * activeFile.metadata.width + x) * 4;
 		selectedColor = [
-			sourcePixels[pixelIndex],
-			sourcePixels[pixelIndex + 1],
-			sourcePixels[pixelIndex + 2],
-			sourcePixels[pixelIndex + 3]
+			activeFile.sourcePixels[pixelIndex],
+			activeFile.sourcePixels[pixelIndex + 1],
+			activeFile.sourcePixels[pixelIndex + 2],
+			activeFile.sourcePixels[pixelIndex + 3]
 		];
 		errorMessage = null;
 		scheduleCropComputation(0);
 	}
 
 	function handleWheel(event: WheelEvent): void {
-		if (!imageMetadata || !canvasElement) {
+		if (!activeFile || !canvasElement) {
 			return;
 		}
 
@@ -330,14 +353,11 @@
 		scheduleRender();
 	}
 
-	async function loadImageFile(file: File): Promise<void> {
+	async function loadImageFile(file: File): Promise<LoadedFile | null> {
 		if (!file.type.startsWith('image/')) {
 			errorMessage = "Le fichier déposé n'est pas une image.";
-			return;
+			return null;
 		}
-
-		isLoading = true;
-		errorMessage = null;
 
 		try {
 			const imageBitmap = await createImageBitmap(file);
@@ -348,43 +368,82 @@
 			}
 
 			context.drawImage(imageBitmap, 0, 0);
+			const sourcePixels = context.getImageData(0, 0, imageBitmap.width, imageBitmap.height).data;
 
-			sourceCanvas = canvas;
-			sourcePixels = context.getImageData(0, 0, imageBitmap.width, imageBitmap.height).data;
-			selectedColor = null;
-			cropBox = null;
-			hasManualTransform = false;
+			const THUMB_MAX = 120;
+			const thumbScale = Math.min(THUMB_MAX / imageBitmap.width, THUMB_MAX / imageBitmap.height, 1);
+			const thumbCanvas = document.createElement('canvas');
+			thumbCanvas.width = Math.round(imageBitmap.width * thumbScale);
+			thumbCanvas.height = Math.round(imageBitmap.height * thumbScale);
+			thumbCanvas
+				.getContext('2d')!
+				.drawImage(imageBitmap, 0, 0, thumbCanvas.width, thumbCanvas.height);
+			const thumbnailUrl = thumbCanvas.toDataURL('image/jpeg', 0.7);
 
-			imageMetadata = {
+			const metadata: ImageMetadata = {
 				name: file.name.replace(/\.[^/.]+$/, ''),
 				mimeType: getMimeTypeFromFile(file),
 				width: imageBitmap.width,
 				height: imageBitmap.height
 			};
 
-			const workerClient = ensureCropWorkerClient();
-			if (workerClient) {
-				await workerClient.setImageData(sourcePixels, imageBitmap.width, imageBitmap.height);
-			}
-
-			fitImageToViewport();
-			scheduleRender();
+			return {
+				id: crypto.randomUUID(),
+				metadata,
+				sourceCanvas: canvas,
+				sourcePixels,
+				cropBox: null,
+				thumbnailUrl
+			};
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : 'Impossible de charger cette image.';
-			sourcePixels = null;
-		} finally {
-			isLoading = false;
+			return null;
+		}
+	}
+
+	async function switchToFile(id: string): Promise<void> {
+		activeFileId = id;
+		const file = files.find((f) => f.id === id);
+		if (!file) return;
+
+		cancelOngoingComputation();
+		const workerClient = ensureCropWorkerClient();
+		if (workerClient) {
+			await workerClient.setImageData(file.sourcePixels, file.metadata.width, file.metadata.height);
+		}
+
+		hasManualTransform = false;
+		fitImageToViewport();
+
+		if (selectedColor !== null) {
+			scheduleCropComputation(0);
+		} else {
+			scheduleRender();
 		}
 	}
 
 	async function handleInputChange(event: Event): Promise<void> {
 		const input = event.currentTarget as HTMLInputElement;
-		const file = input.files?.[0];
-		if (!file) {
+		const fileList = Array.from(input.files ?? []);
+		if (!fileList.length) {
 			return;
 		}
 
-		await loadImageFile(file);
+		isLoading = true;
+		errorMessage = null;
+
+		for (const file of fileList) {
+			const loaded = await loadImageFile(file);
+			if (loaded) {
+				files = [...files, loaded];
+			}
+		}
+
+		if (!activeFileId && files.length > 0) {
+			await switchToFile(files[0].id);
+		}
+
+		isLoading = false;
 		input.value = '';
 	}
 
@@ -392,29 +451,104 @@
 		event.preventDefault();
 		isDragOver = false;
 
-		const file = event.dataTransfer?.files?.[0];
-		if (!file) {
+		const fileList = Array.from(event.dataTransfer?.files ?? []);
+		if (!fileList.length) {
 			return;
 		}
 
-		await loadImageFile(file);
+		isLoading = true;
+		errorMessage = null;
+
+		for (const file of fileList) {
+			const loaded = await loadImageFile(file);
+			if (loaded) {
+				files = [...files, loaded];
+			}
+		}
+
+		if (!activeFileId && files.length > 0) {
+			await switchToFile(files[0].id);
+		}
+
+		isLoading = false;
 	}
 
 	async function downloadCrop(): Promise<void> {
-		if (!sourceCanvas || !imageMetadata || !cropBox) {
+		if (!activeFile || !effectiveCropBox) {
 			return;
 		}
 
-		const croppedCanvas = createCroppedCanvas(sourceCanvas, cropBox);
-		const blob = await canvasToBlob(croppedCanvas, imageMetadata.mimeType);
-		const extension = getExtensionFromMimeType(imageMetadata.mimeType);
+		const croppedCanvas = createCroppedCanvas(activeFile.sourceCanvas, effectiveCropBox);
+		const blob = await canvasToBlob(croppedCanvas, activeFile.metadata.mimeType);
+		const extension = getExtensionFromMimeType(activeFile.metadata.mimeType);
 
 		const link = document.createElement('a');
 		const url = URL.createObjectURL(blob);
 		link.href = url;
-		link.download = `${imageMetadata.name}-cropped.${extension}`;
+		link.download = `${activeFile.metadata.name}.${extension}`;
 		link.click();
 		URL.revokeObjectURL(url);
+	}
+
+	async function cropAllToZip(): Promise<void> {
+		if (!files.length) return;
+		isCroppingAll = true;
+
+		const client = ensureCropWorkerClient();
+		const capturedColor = selectedColor
+			? ([selectedColor[0], selectedColor[1], selectedColor[2], selectedColor[3]] as RGBA)
+			: null;
+		const capturedTolerance = tolerance;
+		const entries: Record<string, Uint8Array> = {};
+
+		for (const file of files) {
+			try {
+				if (client) {
+					await client.setImageData(file.sourcePixels, file.metadata.width, file.metadata.height);
+				}
+				const box =
+					capturedColor !== null && client
+						? await client.computeCropBox(capturedColor, capturedTolerance)
+						: { x: 0, y: 0, width: file.metadata.width, height: file.metadata.height };
+
+				const croppedCanvas = createCroppedCanvas(file.sourceCanvas, box);
+				const blob = await canvasToBlob(croppedCanvas, file.metadata.mimeType);
+				const arrayBuffer = await blob.arrayBuffer();
+				const ext = getExtensionFromMimeType(file.metadata.mimeType);
+				entries[`${file.metadata.name}.${ext}`] = new Uint8Array(arrayBuffer);
+			} catch (error) {
+				if (
+					error instanceof DOMException
+						? error.name === 'AbortError'
+						: typeof error === 'object' &&
+							error !== null &&
+							'name' in error &&
+							error.name === 'AbortError'
+				) {
+					continue;
+				}
+				throw error;
+			}
+		}
+
+		// Restaurer le worker avec le fichier actif
+		if (activeFile && client) {
+			await client.setImageData(
+				activeFile.sourcePixels,
+				activeFile.metadata.width,
+				activeFile.metadata.height
+			);
+		}
+
+		const zipped = zipSync(entries);
+		const zipBlob = new Blob([zipped.buffer as ArrayBuffer], { type: 'application/zip' });
+		const url = URL.createObjectURL(zipBlob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = 'cropped-images.zip';
+		a.click();
+		URL.revokeObjectURL(url);
+		isCroppingAll = false;
 	}
 
 	function openFileDialog(): void {
@@ -472,46 +606,63 @@
 </script>
 
 <main class="page-shell">
-	<section
-		class="stage"
-		aria-label="Zone de dépôt d'image"
-		ondragover={(event) => {
-			event.preventDefault();
-			isDragOver = true;
-		}}
-		ondragleave={(event) => {
-			if (event.currentTarget === event.target) {
-				isDragOver = false;
-			}
-		}}
-		ondrop={handleDrop}
-	>
-		<div class="glow"></div>
-		<div class="viewport-wrap" bind:this={viewportElement}>
-			<canvas
-				bind:this={canvasElement}
-				class="viewport-canvas"
-				tabindex="0"
-				onclick={handleCanvasClick}
-				onwheel={handleWheel}
-			></canvas>
+	<div class="main-area">
+		{#if files.length > 0}
+			<aside class="sidebar">
+				{#each files as file (file.id)}
+					<button
+						class="file-item"
+						class:active={file.id === activeFileId}
+						onclick={() => switchToFile(file.id)}
+					>
+						<img src={file.thumbnailUrl} alt={file.metadata.name} class="thumb" />
+						<span class="filename">{file.metadata.name}</span>
+					</button>
+				{/each}
+			</aside>
+		{/if}
 
-			{#if !imageMetadata}
-				<button class="drop-overlay" type="button" onclick={openFileDialog}>
-					<p class="drop-title">Drop an image here</p>
-					<p class="drop-subtitle">ou cliquez pour choisir un fichier</p>
-				</button>
-			{/if}
+		<section
+			class="stage"
+			aria-label="Zone de dépôt d'image"
+			ondragover={(event) => {
+				event.preventDefault();
+				isDragOver = true;
+			}}
+			ondragleave={(event) => {
+				if (event.currentTarget === event.target) {
+					isDragOver = false;
+				}
+			}}
+			ondrop={handleDrop}
+		>
+			<div class="glow"></div>
+			<div class="viewport-wrap" bind:this={viewportElement}>
+				<canvas
+					bind:this={canvasElement}
+					class="viewport-canvas"
+					tabindex="0"
+					onclick={handleCanvasClick}
+					onwheel={handleWheel}
+				></canvas>
 
-			{#if isDragOver}
-				<div class="drop-highlight">Relâchez l'image pour la charger</div>
-			{/if}
+				{#if !activeFile}
+					<button class="drop-overlay" type="button" onclick={openFileDialog}>
+						<p class="drop-title">Drop an image here</p>
+						<p class="drop-subtitle">ou cliquez pour choisir un fichier</p>
+					</button>
+				{/if}
 
-			{#if isLoading}
-				<div class="drop-highlight">Chargement de l'image...</div>
-			{/if}
-		</div>
-	</section>
+				{#if isDragOver}
+					<div class="drop-highlight">Relâchez l'image pour la charger</div>
+				{/if}
+
+				{#if isLoading}
+					<div class="drop-highlight">Chargement de l'image...</div>
+				{/if}
+			</div>
+		</section>
+	</div>
 
 	{#if errorMessage}
 		<p class="error-banner">{errorMessage}</p>
@@ -525,7 +676,7 @@
 			onclick={() => {
 				isPipetteEnabled = !isPipetteEnabled;
 			}}
-			disabled={!imageMetadata}
+			disabled={!activeFile}
 		>
 			Pipette
 		</button>
@@ -535,24 +686,41 @@
 			<input id="tolerance" type="range" min="0" max="100" step="1" bind:value={tolerance} />
 		</div>
 
-		<div class="color-preview">
+		<div class="color-info">
 			<span>Couleur</span>
-			<div class="swatch" style={`background:${selectedColorCss};`}></div>
-			{#if selectedColor}
-				<small>
-					rgba({selectedColor[0]}, {selectedColor[1]}, {selectedColor[2]}, {selectedColor[3]})
-				</small>
+			{#if selectedColor !== null}
+				<div class="color-preview">
+					<div class="swatch" style={`background:${selectedColorCss};`}></div>
+					<small>
+						rgba({selectedColor[0]}, {selectedColor[1]}, {selectedColor[2]}, {selectedColor[3]})
+					</small>
+				</div>
+			{:else}
+				<span class="no-color">Aucune</span>
 			{/if}
 		</div>
 
-		<button type="button" class="crop-button" onclick={downloadCrop} disabled={!canCrop}>
-			Crop
-		</button>
+		<div class="crop-buttons">
+			<button type="button" class="crop-button" onclick={downloadCrop} disabled={!canCrop}>
+				Crop
+			</button>
+			{#if files.length > 1}
+				<button
+					type="button"
+					class="crop-button crop-all-button"
+					onclick={cropAllToZip}
+					disabled={isCroppingAll}
+				>
+					{isCroppingAll ? 'Traitement…' : 'Crop all'}
+				</button>
+			{/if}
+		</div>
 	</section>
 
 	<input
 		type="file"
 		accept="image/*"
+		multiple
 		bind:this={fileInputElement}
 		hidden
 		onchange={handleInputChange}
@@ -578,14 +746,78 @@
 		padding: 1rem;
 	}
 
+	.main-area {
+		display: flex;
+		gap: 1rem;
+		overflow: hidden;
+		min-height: 0;
+	}
+
 	.stage {
 		position: relative;
+		flex: 1;
+		min-width: 0;
 		border-radius: 1.25rem;
 		background: color-mix(in srgb, #ffffff 76%, #fefce8 24%);
 		box-shadow:
 			0 18px 40px -30px #1f2937,
 			0 0 0 1px color-mix(in srgb, #0f172a 8%, transparent);
 		overflow: hidden;
+	}
+
+	.sidebar {
+		width: 160px;
+		min-width: 160px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		overflow-y: auto;
+		background: color-mix(in srgb, #ffffff 88%, transparent);
+		border-radius: 1.25rem;
+		padding: 0.5rem;
+		box-shadow: 0 8px 20px -18px #111827;
+	}
+
+	.file-item {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.3rem;
+		padding: 0.5rem;
+		border: 0;
+		border-radius: 0.75rem;
+		background: transparent;
+		cursor: pointer;
+		font-family: 'Space Grotesk', sans-serif;
+		transition: background 150ms ease;
+		width: 100%;
+	}
+
+	.file-item:hover {
+		background: color-mix(in srgb, #14b8a6 15%, transparent);
+	}
+
+	.file-item.active {
+		background: color-mix(in srgb, #14b8a6 25%, transparent);
+		box-shadow: inset 3px 0 0 #14b8a6;
+	}
+
+	.thumb {
+		width: 100%;
+		height: auto;
+		border-radius: 0.5rem;
+		object-fit: contain;
+		display: block;
+	}
+
+	.filename {
+		font-size: 0.75rem;
+		color: #374151;
+		text-overflow: ellipsis;
+		overflow: hidden;
+		white-space: nowrap;
+		width: 100%;
+		text-align: center;
 	}
 
 	.glow {
@@ -657,6 +889,28 @@
 		box-shadow: 0 8px 20px -18px #111827;
 	}
 
+	.color-info {
+		display: grid;
+		gap: 0.2rem;
+		font-size: 0.86rem;
+	}
+
+	.no-color {
+		color: #9ca3af;
+		font-size: 0.86rem;
+	}
+
+	.crop-buttons {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+	}
+
+	.crop-all-button {
+		background: #6366f1;
+		color: white;
+	}
+
 	.tool-button,
 	.crop-button {
 		border: 0;
@@ -703,7 +957,6 @@
 		grid-auto-flow: column;
 		gap: 0.5rem;
 		align-items: center;
-		font-size: 0.86rem;
 	}
 
 	.swatch {
@@ -744,7 +997,7 @@
 			grid-template-columns: 1fr;
 		}
 
-		.color-preview {
+		.color-info {
 			grid-auto-flow: row;
 			justify-items: start;
 		}
